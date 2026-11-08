@@ -80,17 +80,35 @@ and needs ~7 GB to beat it.
 `tok/cycle` stayed at 2.8–3.0 across all three runs, so the speculative-decoding
 gain is roughly constant — what the memory buys is fewer experts read from the SSD.
 
-### Splash cannot run without the draft
+### Splash cannot run without the draft — but a minimal draft isolates the effect
 
-Tried removing `draft/` from the prepared assembly to free ~1 GB and isolate the
-effect of speculative decoding. The engine refuses:
+Removing `draft/` from the assembly is refused outright:
 
 ```
 MODEL_DIRECTORY must hold the model's target/ and draft/ directories
 ```
 
-So DFlash2 is not optional in this build, and the contribution of `tok/cycle`
-can't be isolated by simply switching it off.
+The engine only requires *at least one* draft layer, though, so a **1-layer draft**
+can be built from the real 6-layer DFlash2 checkpoint by keeping layer 0 and setting
+`num_hidden_layers: 1`. That satisfies the loader, drops the draft from 458 to 424 MiB,
+and drives acceptance to zero. Measured at identical memory (1557 expert slots, 8G/4K):
+
+| Draft | Decode | `tok/cycle` | vs TF |
+|---|---|---:|---:|
+| Full DFlash2 (6 layers) | **12.3–13.2 tok/s** | 2.8–3.0 | +64 % |
+| 1-layer draft | 8.2–8.8 tok/s | **1.0** | +12 % |
+
+Three things this shows:
+
+1. **DFlash2 is worth ~+47 %** at equal memory — that is the speculative-decoding
+   contribution, separated from the expert cache for the first time.
+2. **Splash's other optimisations are worth ~+12 %** over TurboFieldfare even with
+   speculation fully neutralised. That is the "streamed experts + tuned kernels"
+   floor, and it is real but modest.
+3. **A degenerate draft still costs something.** It proposes, the target verifies,
+   and only then emits one token. At `1.0 tok/cycle` the verify pass is wasted work,
+   so this is a *floor*, not a free way to disable speculation.
+
 
 ## Settings used
 
@@ -102,6 +120,7 @@ can't be isolated by simply switching it off.
 | Splash (7G) | `--max-memory 7G --max-context 2048 --kv-format int8 --max-cache-disk 0 --expert-memory 2G` |
 | Splash (8G) | `--max-memory 8G --max-context 4096 --kv-format int8 --max-cache-disk 0 --expert-memory 3G` |
 | Splash (floor) | `--max-memory 7600M --max-context 2048 --kv-format int8 --max-cache-disk 0 --expert-memory 1G` |
+| Splash (1-layer draft) | `--max-memory 8G --max-context 4096 --kv-format int8 --max-cache-disk 0 --expert-memory 3G`, draft rebuilt with `num_hidden_layers: 1` |
 
 Splash reports from its own logs:
 
@@ -254,3 +273,26 @@ Mac engine, so it was out of scope.
 ## License
 
 MIT for the scripts in this repo. Each engine and model keeps its own license.
+
+## Building a minimal draft (how the 1-layer run was done)
+
+Splash's loader accepts any DFlash2 draft with `num_hidden_layers >= 1`, so the
+effect of speculative decoding can be isolated by truncating the real draft:
+
+```python
+# keep only layer 0 of the 6-layer DFlash2 draft, rewriting the safetensors header
+KEEP_LAYERS = {0}
+# ... copy tensors whose name is not "layers.<n>.*" or whose n is in KEEP_LAYERS,
+#     recompute data_offsets, write the new header
+```
+
+then set `num_hidden_layers: 1` in `config.json` and prepare it against the target:
+
+```python
+from install.local import prepare_local_model
+prepare_local_model('<target dir>', draft='/tmp/draft-min', language_only=True)
+```
+
+Acceptance drops to zero, `tok/cycle` becomes 1.0, and the run gives the floor
+reported above. It is not a supported configuration — it is a measurement trick —
+but the loader accepts it and the output stays coherent.
