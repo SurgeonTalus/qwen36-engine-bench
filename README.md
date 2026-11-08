@@ -6,6 +6,16 @@ Small test — treat the numbers as directional, not as a benchmark suite.
 **Date:** 2026-11-08
 **Machine:** MacBook Pro (M1 Pro, 10 cores: 8P + 2E, 16 GB unified), macOS 27.0.1, Metal 4
 
+## The engines
+
+| Engine | Project | Version used |
+|---|---|---|
+| TurboFieldfare | <https://github.com/drumih/turbo-fieldfare> | local fork with disk prefix cache, `--max-context 65536` support |
+| Splash (M1 build) | <https://github.com/incoai/splash> · M1/M2 fork: <https://github.com/paperniuk/splash> | `splash-m1` 1.4.0-m1 |
+| AiiStream Q3.6 | <https://github.com/apirathaiya/aiistream-q3.6> | `main` at time of test, `mlx==0.32.2`, `mlx-lm==0.31.3` |
+
+Model source: <https://huggingface.co/mlx-community/Qwen3.6-35B-A3B-4bit>
+
 ## The model
 
 All three ran the **same checkpoint revision**, `mlx-community/Qwen3.6-35B-A3B-4bit`
@@ -15,7 +25,7 @@ at `38740b847e4cb78f352aba30aa41c76e08e6eb46`:
 - MLX affine 4-bit, group 64
 - ~18 GB of routed experts on disk
 
-TurboFieldfare and Zeno repack it into their own containers; Splash and AiiStream
+TurboFieldfare repacks it into its own `.gturbo` container; Splash and AiiStream
 read the MLX safetensors directly. Same weights, same routing.
 
 ## Test
@@ -118,9 +128,48 @@ workarounds. They assume:
 - `~/.cache/huggingface/hub/models--mlx-community--Qwen3.6-35B-A3B-4bit` — MLX checkpoint
 - Splash M1 installed (`splash-m1`, release 1.4.0-m1) plus a prepared assembly
 
+### Get the pieces
+
+```sh
+# 1. The checkpoint (~20 GB, SHA-256 verified per shard)
+hf download mlx-community/Qwen3.6-35B-A3B-4bit --revision 38740b847e4cb78f352aba30aa41c76e08e6eb46
+
+# 2. TurboFieldfare — streams the same checkpoint from the Hub and repacks it
+git clone https://github.com/drumih/turbo-fieldfare
+cd turbo-fieldfare
+swift build -c release
+swift run -c release TurboFieldfareRepack --model qwen36 --output scratch/qwen36.gturbo
+
+# 3. Splash M1 (M1/M2 need the fork — upstream requires M3+)
+curl -fsSL https://github.com/paperniuk/splash/releases/download/1.4.0-m1/install-m1.sh | sh
+
+# 4. AiiStream
+git clone https://github.com/apirathaiya/aiistream-q3.6
+cd aiistream-q3.6 && python3 -m venv .venv && source .venv/bin/activate
+pip install "mlx==0.32.2" "mlx-lm==0.31.3" huggingface_hub
+scripts/download_model.sh    # ~20 GB, verified
+```
+
+Splash needs a DFlash2 draft for the target family. It fetches
+`incoai/Qwen3.6-35B-A3B-DFlash2` (~2 GB) when preparing a local model, or take it
+from the Hub yourself. Note that `z-lab/Qwen3.6-35B-A3B-DFlash` is a *different*
+draft format and Splash rejects it.
+
 Splash needed ~7.2 GB free plus a 1.6 GB macOS reserve, which is why it ran at
 2048 context here. On a machine with more free RAM, raise `--max-context` and
 `--expert-memory` and expect a higher `tok/cycle`.
+
+## Related work
+
+- TurboFieldfare performance notes: <https://github.com/drumih/turbo-fieldfare/blob/main/docs/QWEN36_PERFORMANCE.md>
+- Splash documentation: <https://github.com/incoai/splash/tree/main/docs>
+- AiiStream benchmark and identity scripts: <https://github.com/apirathaiya/aiistream-q3.6/tree/main/scripts>
+
+A closely related project not tested here: <https://github.com/Niko1221/Strata>
+(GGUF + Metal, MoE expert streaming). It does not currently run Qwen3.6 on the
+Mac engine, so it was out of scope.
+
+
 
 ## License
 
