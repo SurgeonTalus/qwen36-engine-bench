@@ -57,11 +57,28 @@ the prompt-reuse that all three engines can do.
 | AiiStream (prefetch) | 6.58 tok/s | 4.85 s | 43.6 s | −15 % | 1.64 GB MLX peak |
 | AiiStream (direct) | 3.96 tok/s | 7.96 s | 72.4 s | −49 % | 1.63 GB MLX peak |
 
-Splash scales with the memory it gets: 7G/2K gave 950 expert slots and 9.8–10.3 tok/s,
-8G/4K gave 1557 slots and 12.3–13.2 tok/s. It did not fit at 10G / 4G expert memory on
-this machine (`not enough free memory to start`, 1587 MiB reclaimable).
+Splash scales with the memory it gets. Measured ladder, same prompt, same model:
 
-`Splash`, `AiiStream` and `TurboFieldfare` rows are two runs where shown.
+| `--max-memory` / context / `--expert-memory` | Expert slots | Decode | vs TF |
+|---|---|---:|---:|
+| 8G / 4K / 3G | 1557 (15 %) | **12.3–13.2 tok/s** | **+64 %** |
+| 7G / 2K / 2G | 950 (9 %) | 9.8–10.3 tok/s | +29 % |
+| 7.6G / 2K / 1G | 343 (3 %) | 6.7–6.9 tok/s | **−12 %** |
+| 7.6G / 2K / 256M | — | refused | — |
+
+`--expert-memory 256M` is below the engine's floor:
+
+```
+error: --expert-memory of 256 MiB is less than its smallest store, 877 MiB
+```
+
+**There is a crossover.** Below roughly 1 GB of expert store, Splash is *slower*
+than TurboFieldfare (6.7 vs 7.78 tok/s). TurboFieldfare is designed around a ~2 GB
+budget and does more with less; Splash is designed to take the whole Metal budget
+and needs ~7 GB to beat it.
+
+`tok/cycle` stayed at 2.8–3.0 across all three runs, so the speculative-decoding
+gain is roughly constant — what the memory buys is fewer experts read from the SSD.
 
 ### Splash cannot run without the draft
 
@@ -84,6 +101,7 @@ can't be isolated by simply switching it off.
 | AiiStream | `temperature=0, seed=0, max_completion_tokens=256`, in-process, no HTTP |
 | Splash (7G) | `--max-memory 7G --max-context 2048 --kv-format int8 --max-cache-disk 0 --expert-memory 2G` |
 | Splash (8G) | `--max-memory 8G --max-context 4096 --kv-format int8 --max-cache-disk 0 --expert-memory 3G` |
+| Splash (floor) | `--max-memory 7600M --max-context 2048 --kv-format int8 --max-cache-disk 0 --expert-memory 1G` |
 
 Splash reports from its own logs:
 
@@ -92,7 +110,27 @@ Splash reports from its own logs:
           10.3 tok/s · 3.9 tok/cycle   |   9.8 tok/s · 3.0 tok/cycle
 8G / 4K:  1557 slots for 10240 experts (15%) in 2627 MiB
           12.3 tok/s · 3.0 tok/cycle   |  13.2 tok/s · 2.8 tok/cycle
+floor:    343 slots for 10240 experts (3%) in 578 MiB
+          6.7 tok/s · 3.0 tok/cycle    |   6.9 tok/s · 2.9 tok/cycle
 ```
+
+### Where Splash's memory goes
+
+From the checkpoint's own safetensors headers:
+
+| Category | Size | Share |
+|---|---:|---:|
+| routed experts | 17 280 MiB | 88.8 % |
+| vision tower | 852 MiB | 4.4 % |
+| attention | 690 MiB | 3.5 % |
+| embed + head | 546 MiB | 2.8 % |
+| shared expert | 68 MiB | 0.3 % |
+| router | 21 MiB | 0.1 % |
+| **non-expert total** | **1 325 MiB** | **6.8 %** |
+
+The routed experts are the only part Splash can stream (`--expert-memory`); the
+remaining 1.3 GB is structurally resident and has no streaming flag. Its reported
+`target weights: 5489 MiB` is that 1.3 GB plus KV and scratch sized by `--max-context`.
 
 ## What the numbers suggest
 
@@ -139,7 +177,21 @@ read, where bandwidth alone would predict ~8 ms.
    engines.
 7. **Splash ran on the M1/M2 community fork, not upstream.** See the note above.
 
+## Context window: the practical winner
+
+TurboFieldfare ran at **64K context** on the same machine (its server default, and
+the setting used for real work with PPTXFast). Splash ran at **2K–4K** because that
+is all the memory allowed. That is not a footnote — it is the deciding difference for
+document work:
+
+- TurboFieldfare: 64K context, ~1.7 GB RAM, 7.78 tok/s
+- Splash: 2K–4K context, ~8 GB RAM, 12.3–13.2 tok/s
+
+A 5–10K token system prompt plus a document does not fit in Splash's window on this
+machine at all. Choosing Splash here means choosing latency over usability.
+
 ## Why this is even worth publishing
+
 
 The published numbers from each project come from different hardware and compare
 against different baselines. Splash's headline is against M5 with the model
