@@ -11,8 +11,14 @@ Small test — treat the numbers as directional, not as a benchmark suite.
 | Engine | Project | Version used |
 |---|---|---|
 | TurboFieldfare | <https://github.com/drumih/turbo-fieldfare> | local fork with disk prefix cache, `--max-context 65536` support |
-| Splash (M1 build) | <https://github.com/incoai/splash> · M1/M2 fork: <https://github.com/paperniuk/splash> | `splash-m1` 1.4.0-m1 |
+| Splash (M1 build) | **M1/M2 fork: <https://github.com/paperniuk/splash>**<br>upstream: <https://github.com/incoai/splash> | `splash-m1` **1.4.0-m1** |
 | AiiStream Q3.6 | <https://github.com/apirathaiya/aiistream-q3.6> | `main` at time of test, `mlx==0.32.2`, `mlx-lm==0.31.3` |
+
+> **Note on Splash:** upstream Splash requires **M3 or newer**. This machine is an
+> M1 Pro, so every Splash number here comes from the community **M1/M2 fork**
+> ([paperniuk/splash](https://github.com/paperniuk/splash)), release `1.4.0-m1` —
+> not from `incoai/splash` itself. The fork carries M1/M2 kernels on top of upstream
+> 1.4.0. Numbers are therefore not directly comparable with upstream's M3+/M5 results.
 
 Model source: <https://huggingface.co/mlx-community/Qwen3.6-35B-A3B-4bit>
 
@@ -131,6 +137,7 @@ read, where bandwidth alone would predict ~8 ms.
 6. **Different quantisation of the *same* checkpoint** — all MLX affine 4-bit
    group 64, but each engine has its own repack/kernels. Not bit-comparable across
    engines.
+7. **Splash ran on the M1/M2 community fork, not upstream.** See the note above.
 
 ## Why this is even worth publishing
 
