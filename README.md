@@ -45,12 +45,29 @@ the prompt-reuse that all three engines can do.
 
 | Engine | Decode | TTFT | Total (256 tok) | vs TurboFieldfare | Peak RAM |
 |---|---:|---:|---:|---:|---:|
-| **Splash M1 + DFlash2** | **10.3 / 9.8 tok/s** | 1.8 / 1.4 s | 26.5 / 27.6 s | **+29 %** | ~7 GB reserved |
-| **TurboFieldfare** | **7.78 tok/s** | 1.68 s | 32.9 s | — | ~1.7 GB |
+| **Splash M1 + DFlash2, 8G / 4K** | **12.3 / 13.2 tok/s** | 1.3 s | 20.7 / 20.2 s | **+64 %** | ~8 GB reserved |
+| **Splash M1 + DFlash2, 7G / 2K** | 10.3 / 9.8 tok/s | 1.8 / 1.4 s | 26.5 / 27.6 s | +29 % | ~7 GB reserved |
+| **TurboFieldfare** (24 slots) | **7.78 tok/s** | 1.68 s | 32.9 s | — | ~1.7 GB |
 | AiiStream (prefetch) | 6.58 tok/s | 4.85 s | 43.6 s | −15 % | 1.64 GB MLX peak |
 | AiiStream (direct) | 3.96 tok/s | 7.96 s | 72.4 s | −49 % | 1.63 GB MLX peak |
 
-`Splash` and `AiiStream` rows are two runs. `TurboFieldfare` one run per config.
+Splash scales with the memory it gets: 7G/2K gave 950 expert slots and 9.8–10.3 tok/s,
+8G/4K gave 1557 slots and 12.3–13.2 tok/s. It did not fit at 10G / 4G expert memory on
+this machine (`not enough free memory to start`, 1587 MiB reclaimable).
+
+`Splash`, `AiiStream` and `TurboFieldfare` rows are two runs where shown.
+
+### Splash cannot run without the draft
+
+Tried removing `draft/` from the prepared assembly to free ~1 GB and isolate the
+effect of speculative decoding. The engine refuses:
+
+```
+MODEL_DIRECTORY must hold the model's target/ and draft/ directories
+```
+
+So DFlash2 is not optional in this build, and the contribution of `tok/cycle`
+can't be isolated by simply switching it off.
 
 ## Settings used
 
@@ -59,22 +76,26 @@ the prompt-reuse that all three engines can do.
 | TurboFieldfare | `--max-context 4096 --temperature 0 --top-k 0 --expert-cache-slots 24` |
 | TurboFieldfare (2nd) | same but `--expert-cache-slots 32` → **7.62 tok/s** |
 | AiiStream | `temperature=0, seed=0, max_completion_tokens=256`, in-process, no HTTP |
-| Splash | `--max-memory 7G --max-context 2048 --kv-format int8 --max-cache-disk 0 --expert-memory 2G` |
+| Splash (7G) | `--max-memory 7G --max-context 2048 --kv-format int8 --max-cache-disk 0 --expert-memory 2G` |
+| Splash (8G) | `--max-memory 8G --max-context 4096 --kv-format int8 --max-cache-disk 0 --expert-memory 3G` |
 
-Splash report from its own log:
+Splash reports from its own logs:
 
 ```
-950 slots for 10240 experts (9%) in 1603 MiB
-10.3 tok/s · 3.9 tok/cycle
- 9.8 tok/s · 3.0 tok/cycle
+7G / 2K:  950 slots for 10240 experts (9%) in 1603 MiB
+          10.3 tok/s · 3.9 tok/cycle   |   9.8 tok/s · 3.0 tok/cycle
+8G / 4K:  1557 slots for 10240 experts (15%) in 2627 MiB
+          12.3 tok/s · 3.0 tok/cycle   |  13.2 tok/s · 2.8 tok/cycle
 ```
 
 ## What the numbers suggest
 
-**Splash wins on decode, from speculative decoding, not from I/O.** Its logs show
-`3.0-3.9 tok/cycle` — DFlash2 verifies ~3 tokens per pass, so the 40 per-layer
-CPU↔GPU handshakes are divided by 3 instead of 1. It won with *fewer* expert slots
-(950) than TurboFieldfare (960), so the gain is not a bigger expert cache.
+**Splash wins on decode, and the margin depends on how much memory it gets.** At
+7 GB it gave 9.8–10.3 tok/s (+29 % over TurboFieldfare); at 8 GB with a 4K context
+it gave 12.3–13.2 tok/s (**+64 %**). Its logs show `2.8–3.9 tok/cycle` — DFlash2
+verifies ~3 tokens per pass, so the 40 per-layer CPU↔GPU handshakes are divided by
+3 instead of 1. The 8G run won with 1557 expert slots against TurboFieldfare's 960,
+but the 7G run won with 950 — fewer — so the gain is not simply a bigger expert cache.
 
 **AiiStream's prefetch works but starts from a lower baseline.** It is +66 % over
 its own `direct` mode (3.96 → 6.58), which matches its published +72 %. But that
@@ -99,9 +120,9 @@ read, where bandwidth alone would predict ~8 ms.
 2. **Runs were sequential, not interleaved.** Paired A/B with alternating order is
    the correct method for I/O-sensitive engines; this was not that. Treat the
    magnitudes as indicative.
-3. **Splash ran at 2048 context, the others at 4096**, because the machine could
-   not free enough memory for a larger plan. Decode is largely insensitive to the
-   cap, TTFT is not.
+3. **Splash's context varied with available memory**: 2048 at 7 GB, 4096 at 8 GB, and
+   it would not start at 10 GB / 4 GB expert memory. Decode is largely insensitive
+   to the cap, TTFT is not. The machine was also carrying 1.7–1.9 GB of swap.
 4. **TurboFieldfare was measured at 24 and 32 slots; the app defaults to 16.**
    At 16 it would be ~3–5 % slower than the 7.78 shown.
 5. **Splash is not bit-identical run to run.** Its own log says so
